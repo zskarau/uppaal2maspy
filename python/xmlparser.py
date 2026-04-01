@@ -1,16 +1,20 @@
-import xml.etree.ElementTree as ET
 import re
+import xml.etree.ElementTree as ET
 
 
+CHANNEL_DECLARATION_RE = re.compile(
+    r"(?P<urgent>urgent\s+)?chan\s+(?P<names>[^;]+);"
+)
+INSTANCE_RE = re.compile(
+    r"(?P<instance>\w+)\s*=\s*(?P<template>\w+)\s*\((?P<args>[^)]*)\)"
+)
 
-
-# ─── Data Classes ────────────────────────────────────────────────────────────
 
 class NTA:
     def __init__(self):
-        self.templates = []       # list of Template
-        self.channels = []        # list of Channel (global)
-        self.instances = {}       # inst_name -> (tmpl_name, [args])
+        self.templates = []
+        self.channels = []
+        self.instances = {}
         self.declarations = None
         self.system = None
 
@@ -18,8 +22,9 @@ class NTA:
 class Template:
     def __init__(self, name):
         self.name = name
-        self.parameters = []      # list of param names (in declaration order)
-        self.clocks = []
+        self.parameters = []
+        self.parameter_kinds = {}
+        self.temporal_vars = set()
         self.locations = []
         self.transitions = []
         self.init = None
@@ -29,9 +34,11 @@ class Template:
         output.append(f"\nTemplate: {self.name}")
         output.append(f"Initial state: {self.init}")
 
-        output.append("\nClocks:")
-        for clock in self.clocks:
-            output.append(f"  {clock.name}: declarado em {self.name}")
+        if self.parameters:
+            output.append("\nParameters:")
+            for param in self.parameters:
+                kind = self.parameter_kinds.get(param, "value")
+                output.append(f"  {param} ({kind})")
 
         output.append("\nLocations:")
         for loc in self.locations:
@@ -45,24 +52,12 @@ class Template:
 
 
 class Location:
-    def __init__(self, id, name=None, invariant=None):
+    def __init__(self, id, name=None):
         self.id = id
         self.name = name
-        self.invariant = invariant
 
     def __str__(self):
-        return (
-            f"Location(id={self.id}, name={self.name}, "
-            f"invariant={self.invariant})"
-        )
-
-
-class Clock:
-    def __init__(self, name):
-        self.name = name
-
-    def __str__(self):
-        return f"Clock(name={self.name})"
+        return f"Location(id={self.id}, name={self.name})"
 
 
 class Channel:
@@ -96,85 +91,141 @@ class Transition:
         )
 
 
-# ─── Parsers ─────────────────────────────────────────────────────────────────
+def get_system_text(root):
+    sys_tag = root.find("s") or root.find("system")
+    return sys_tag.text if sys_tag is not None and sys_tag.text else ""
+
+
+def normalize_channel_name(raw):
+    if raw is None:
+        return None
+
+    normalized = raw.strip().rstrip("!?").strip()
+    normalized = re.sub(r"\[.*\]$", "", normalized)
+    return normalized.strip() or None
+
+
+def resolve_sync_label(sync_label, param_map=None):
+    if not sync_label:
+        return None, None, None
+
+    raw = sync_label.strip()
+    if raw.endswith("!"):
+        direction = "send"
+        label = raw[:-1]
+    elif raw.endswith("?"):
+        direction = "receive"
+        label = raw[:-1]
+    else:
+        return None, None, None
+
+    mapping = param_map or {}
+    actual = mapping.get(label, label)
+    return direction, normalize_channel_name(actual), actual
+
+
+def parse_channels_from_text(text):
+    channels = {}
+    if not text:
+        return []
+
+    for match in CHANNEL_DECLARATION_RE.finditer(text):
+        urgent = bool(match.group("urgent"))
+        for declared_name in match.group("names").split(","):
+            name = normalize_channel_name(declared_name)
+            if name and name not in channels:
+                channels[name] = Channel(name, urgent)
+
+    return list(channels.values())
+
+
+def parse_channels(root):
+    channels = {}
+    for text in (root.findtext("declaration") or "", get_system_text(root)):
+        for channel in parse_channels_from_text(text):
+            channels.setdefault(channel.name, channel)
+    return list(channels.values())
+
 
 def parse_channels_from_system(system_text):
-    """Extract global channel declarations from the <s> block."""
-    channels = []
-    for match in re.finditer(r'(urgent\s+)?chan\s+([\w\s,]+);', system_text):
-        urgent = bool(match.group(1))
-        for name in match.group(2).split(','):
-            name = name.strip()
-            if name:
-                channels.append(Channel(name, urgent))
-    return channels
+    return parse_channels_from_text(system_text)
 
 
 def parse_instances(system_text):
     """
     Extract instantiations like:
         Door1 = Door(activated1, pushed1, closed1, closed2);
-    Returns dict: { 'Door1': ('Door', ['activated1','pushed1','closed1','closed2']) }
+    Returns dict:
+        {'Door1': ('Door', ['activated1', 'pushed1', 'closed1', 'closed2'])}
     """
+
     instances = {}
-    for match in re.finditer(r'(\w+)\s*=\s*(\w+)\s*\(([^)]*)\)', system_text):
-        inst_name = match.group(1)
-        tmpl_name = match.group(2)
-        args = [a.strip() for a in match.group(3).split(',') if a.strip()]
+    for match in INSTANCE_RE.finditer(system_text):
+        inst_name = match.group("instance")
+        tmpl_name = match.group("template")
+        args = [arg.strip() for arg in match.group("args").split(",") if arg.strip()]
         instances[inst_name] = (tmpl_name, args)
     return instances
 
 
 def parse_template_parameters(template_xml):
     """
-    Parse template parameter names from:
-        <parameter>bool &activated, urgent chan &pushed, ...</parameter>
-    Returns list of bare names: ['activated', 'pushed', ...]
+    Parse template parameters and classify the kind of each parameter.
+
+    Example:
+        <parameter>bool &activated, urgent chan &pushed</parameter>
     """
+
     param_text = template_xml.findtext("parameter") or ""
     params = []
-    for part in param_text.split(','):
-        part = part.strip()
-        if part:
-            name = re.split(r'[\s&]+', part)[-1]
-            params.append(name)
-    return params
+    kinds = {}
+
+    for part in param_text.split(","):
+        raw_part = part.strip()
+        if not raw_part:
+            continue
+
+        name = re.split(r"[\s&]+", raw_part)[-1]
+        if "chan" in raw_part:
+            kind = "channel"
+        elif re.search(r"\bbool\b", raw_part):
+            kind = "bool"
+        else:
+            kind = "value"
+
+        params.append(name)
+        kinds[name] = kind
+
+    return params, kinds
 
 
 def parse_template(template_xml):
     name = template_xml.find("name").text
     template = Template(name)
 
-    # parameters
-    template.parameters = parse_template_parameters(template_xml)
+    template.parameters, template.parameter_kinds = parse_template_parameters(
+        template_xml
+    )
 
-    # clocks (from local declaration)
     declaration = template_xml.findtext("declaration") or ""
-    for match in re.finditer(r'\bclock\s+([\w\s,]+);', declaration):
-        for clock_name in match.group(1).split(','):
+    for match in re.finditer(r"\bclock\s+([\w\s,]+);", declaration):
+        for clock_name in match.group(1).split(","):
             clock_name = clock_name.strip()
             if clock_name:
-                template.clocks.append(Clock(clock_name))
+                template.temporal_vars.add(clock_name)
 
-    # locations (with invariant)
     for loc_xml in template_xml.findall("location"):
-        invariant = None
-        for label in loc_xml.findall("label"):
-            if label.get("kind") == "invariant":
-                invariant = label.text
-        loc = Location(
-            id=loc_xml.get("id"),
-            name=loc_xml.findtext("name"),
-            invariant=invariant
+        template.locations.append(
+            Location(
+                id=loc_xml.get("id"),
+                name=loc_xml.findtext("name"),
+            )
         )
-        template.locations.append(loc)
 
-    # initial state
     init = template_xml.find("init")
     if init is not None:
         template.init = init.get("ref")
 
-    # transitions
     for trans_xml in template_xml.findall("transition"):
         source = trans_xml.find("source").get("ref")
         target = trans_xml.find("target").get("ref")
@@ -197,92 +248,68 @@ def parse_template(template_xml):
     return template
 
 
+def _channel_param_mapping(tmpl, args):
+    return {
+        param: normalize_channel_name(arg)
+        for param, arg in zip(tmpl.parameters, args)
+        if tmpl.parameter_kinds.get(param) == "channel"
+    }
+
+
 def analyze_communications(nta):
     """
     Resolve sync labels across all instances using parameter mapping.
 
-    For each instance, replace template parameter names in sync labels
-    with the actual global channel names from the instantiation call.
-
     Returns list of tuples:
         (sorted sender list, sorted receiver list, channel_name)
     """
-    tmpl_by_name = {t.name: t for t in nta.templates}
-    global_chan_names = {c.name for c in nta.channels}
 
-    # inst_channels[inst_name] = (tmpl_name, {param_name: actual_channel})
-    inst_channels = {}
+    tmpl_by_name = {template.name: template for template in nta.templates}
+    senders = {}
+    receivers = {}
+
     for inst_name, (tmpl_name, args) in nta.instances.items():
         tmpl = tmpl_by_name.get(tmpl_name)
         if not tmpl:
             continue
-        mapping = {}
-        for param, arg in zip(tmpl.parameters, args):
-            if arg in global_chan_names:
-                mapping[param] = arg
-        inst_channels[inst_name] = (tmpl_name, mapping)
 
-    senders = {}    # channel_actual -> set of instance names
-    receivers = {}  # channel_actual -> set of instance names
-
-    for inst_name, (tmpl_name, mapping) in inst_channels.items():
-        tmpl = tmpl_by_name.get(tmpl_name)
-        if not tmpl:
-            continue
+        mapping = _channel_param_mapping(tmpl, args)
         for trans in tmpl.transitions:
-            if trans.sync is None:
-                continue
-            raw = trans.sync.strip()
-            if raw.endswith('!'):
-                direction, param_name = 'send', raw[:-1]
-            elif raw.endswith('?'):
-                direction, param_name = 'receive', raw[:-1]
-            else:
+            direction, actual, _ = resolve_sync_label(trans.sync, mapping)
+            if not direction or not actual:
                 continue
 
-            actual = mapping.get(param_name, param_name)
-
-            if direction == 'send':
+            if direction == "send":
                 senders.setdefault(actual, set()).add(inst_name)
             else:
                 receivers.setdefault(actual, set()).add(inst_name)
 
     comms = []
     for chan in sorted(set(senders) | set(receivers)):
-        s_list = sorted(senders.get(chan, {'(unknown)'}))
-        r_list = sorted(receivers.get(chan, {'(unknown)'}))
+        s_list = sorted(senders.get(chan, {"(unknown)"}))
+        r_list = sorted(receivers.get(chan, {"(unknown)"}))
         comms.append((s_list, r_list, chan))
     return comms
 
 
-# ─── Main ─────────────────────────────────────────────────────────────────────
-
 if __name__ == "__main__":
     import sys
-    xml_file = sys.argv[1] if len(sys.argv) > 1 else "2doors.xml"
+
+    xml_file = sys.argv[1] if len(sys.argv) > 1 else "xml\\example_1.xml"
     tree = ET.parse(xml_file)
     root = tree.getroot()
 
     nta = NTA()
-
-    system_text = ""
-    sys_tag = root.find("s") or root.find("system")
-    if sys_tag is not None and sys_tag.text:
-        system_text = sys_tag.text
-
-    nta.channels = parse_channels_from_system(system_text)
-    nta.instances = parse_instances(system_text)
+    nta.channels = parse_channels(root)
+    nta.instances = parse_instances(get_system_text(root))
 
     for template_xml in root.findall("template"):
-        template = parse_template(template_xml)
-        nta.templates.append(template)
-
-    # ─── Print ────────────────────────────────────────────────────────────────
+        nta.templates.append(parse_template(template_xml))
 
     for template in nta.templates:
         print(template)
 
-    print("\n" + "="*50)
+    print("\n" + "=" * 50)
     print("Global Channels:")
     if nta.channels:
         for ch in nta.channels:
@@ -294,8 +321,8 @@ if __name__ == "__main__":
     comms = analyze_communications(nta)
     if comms:
         for s_list, r_list, channel in comms:
-            for s in s_list:
-                for r in r_list:
-                    print(f"  {s} --> {r}  via [{channel}]")
+            for sender in s_list:
+                for receiver in r_list:
+                    print(f"  {sender} --> {receiver}  via [{channel}]")
     else:
         print("  (no synchronisations found)")
