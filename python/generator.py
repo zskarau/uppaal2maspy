@@ -257,10 +257,12 @@ def generate_instance_class(inst_name, tmpl, param_map, chan_receivers):
 
             context_args = []
             comment_lines = []
+            trigger_goal = f'Goal("{src_name}")'
 
             direction, actual_channel, _ = resolve_sync_label(trans.sync, param_map)
             if direction == "receive" and actual_channel:
-                context_args.append(f'Goal("{actual_channel}")')
+                trigger_goal = f'Goal("{actual_channel}")'
+                context_args.append(f'Goal("{src_name}")')
 
             guard_ctx, guard_comments, _, _ = guard_meta
             context_args.extend(guard_ctx)
@@ -273,10 +275,10 @@ def generate_instance_class(inst_name, tmpl, param_map, chan_receivers):
             if context_args:
                 ctx_str = ", ".join(context_args)
                 lines.append(
-                    f'{indent}@pl(gain, Goal("{src_name}"), {ctx_str})'
+                    f"{indent}@pl(gain, {trigger_goal}, {ctx_str})"
                 )
             else:
-                lines.append(f'{indent}@pl(gain, Goal("{src_name}"))')
+                lines.append(f"{indent}@pl(gain, {trigger_goal})")
 
             for comment in comment_lines:
                 lines.append(f"{indent}{comment}")
@@ -398,7 +400,7 @@ def generate_maspy_file(nta):
 
 
 if __name__ == "__main__":
-    xml_file = sys.argv[1] if len(sys.argv) > 1 else "xml\\example_1.xml"
+    xml_file = sys.argv[1] if len(sys.argv) > 1 else "xml\\light-switch.xml"
     out_dir = sys.argv[2] if len(sys.argv) > 2 else "python\\"
 
     nta = build_nta(xml_file)

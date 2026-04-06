@@ -295,7 +295,7 @@ def analyze_communications(nta):
 if __name__ == "__main__":
     import sys
 
-    xml_file = sys.argv[1] if len(sys.argv) > 1 else "xml\\example_1.xml"
+    xml_file = sys.argv[1] if len(sys.argv) > 1 else "xml\\light-switch.xml"
     tree = ET.parse(xml_file)
     root = tree.getroot()
 

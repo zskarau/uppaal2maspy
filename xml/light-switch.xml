@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE nta PUBLIC '-//Uppaal Team//DTD Flat System 1.6//EN' 'http://www.it.uu.se/research/group/darts/uppaal/flat-1_6.dtd'>
+<nta>
+	<declaration>// Place global declarations here.
+chan press;</declaration>
+	<template>
+		<name x="5" y="5">Light</name>
+		<declaration>// Place local declarations here.
+</declaration>
+		<location id="id0" x="-85" y="0">
+			<name x="-95" y="-34">off</name>
+		</location>
+		<location id="id1" x="144" y="0">
+			<name x="136" y="-34">on</name>
+		</location>
+		<init ref="id0"/>
+		<transition id="id2">
+			<source ref="id1"/>
+			<target ref="id0"/>
+			<label kind="synchronisation" x="0" y="-85">press?</label>
+			<nail x="25" y="-68"/>
+		</transition>
+		<transition id="id3">
+			<source ref="id0"/>
+			<target ref="id1"/>
+			<label kind="synchronisation" x="0" y="0">press?</label>
+		</transition>
+	</template>
+	<template>
+		<name>User</name>
+		<location id="id4" x="-110" y="17">
+			<name x="-161" y="8">idle</name>
+		</location>
+		<init ref="id4"/>
+		<transition id="id5">
+			<source ref="id4"/>
+			<target ref="id4"/>
+			<label kind="synchronisation" x="-68" y="9">press!</label>
+			<nail x="-51" y="-25"/>
+			<nail x="-51" y="68"/>
+		</transition>
+	</template>
+	<system>// Place template instantiations here.
+User = User();
+Light = Light();
+// List one or more processes to be composed into a system.
+system User, Light;
+</system>
+	<queries>
+		<query>
+			<formula/>
+			<comment/>
+		</query>
+	</queries>
+</nta>
