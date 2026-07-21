@@ -158,12 +158,6 @@ def _should_skip_transition(trans, guard_meta, update_meta):
     if trans.sync:
         return False
 
-    if has_temporal_guard and not has_supported_guard:
-        return True
-
-    if has_temporal_update and not has_supported_guard and not has_supported_update:
-        return True
-
     if (
         trans.source == trans.target
         and not has_supported_guard
@@ -221,6 +215,7 @@ def generate_instance_class(inst_name, tmpl, param_map, chan_receivers):
     lines.append(f"class {inst_name}(Agent):")
     lines.append(f"{indent}def __init__(self, agt_name):")
     lines.append(f"{inner_indent}super().__init__(agt_name)")
+    lines.append(f"{inner_indent}self.add(Goal(\"{init_name}\"))")
     lines.append("")
 
     for bool_param in bool_params:
@@ -344,11 +339,7 @@ def generate_maspy_file(nta):
     chan_receivers = _build_channel_receivers(nta)
 
     output = []
-    output.append('"""')
-    output.append("MASPY agents generated from a channel-centric UPPAAL model.")
-    output.append('"""')
     output.append("from maspy import *")
-    output.append("")
 
     for inst_name, (tmpl_name, args) in nta.instances.items():
         tmpl = tmpl_by_name.get(tmpl_name)
@@ -400,7 +391,7 @@ def generate_maspy_file(nta):
 
 
 if __name__ == "__main__":
-    xml_file = sys.argv[1] if len(sys.argv) > 1 else "xml\\light-switch.xml"
+    xml_file = sys.argv[1] if len(sys.argv) > 1 else "xml\\example_1.xml"
     out_dir = sys.argv[2] if len(sys.argv) > 2 else "python\\"
 
     nta = build_nta(xml_file)

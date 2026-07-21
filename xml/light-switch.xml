@@ -41,10 +41,10 @@ chan press;</declaration>
 		</transition>
 	</template>
 	<system>// Place template instantiations here.
-User = User();
-Light = Light();
+User1 = User();
+Light1 = Light();
 // List one or more processes to be composed into a system.
-system User, Light;
+system User1, Light1;
 </system>
 	<queries>
 		<query>

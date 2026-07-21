@@ -1,8 +1,4 @@
-"""
-MASPY agents generated from a channel-centric UPPAAL model.
-"""
 from maspy import *
-
 # ------------------------------------------------------------
 # Instance: Prototipo (template: Prototype)
 # ------------------------------------------------------------
@@ -14,7 +10,11 @@ class Prototipo(Agent):
     def load_initial_goal(self):
         self.add(Goal("q0"))
 
-    # No channel-centric plans were generated.
+    @pl(gain, Goal("q0"))
+    # temporal guard ignored: x>=0
+    def q0_1(self, src, *plan_args):
+        self.print(" | ".join(['q0 -> q1']))
+        self.add(Goal("q1"))
 
 if __name__ == "__main__":
     prototipo = Prototipo("Prototipo")
