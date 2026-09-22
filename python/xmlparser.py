@@ -24,6 +24,7 @@ class Template:
         self.name = name
         self.parameters = []
         self.parameter_kinds = {}
+        self.variables = {}
         self.temporal_vars = set()
         self.locations = []
         self.transitions = []
@@ -39,6 +40,13 @@ class Template:
             for param in self.parameters:
                 kind = self.parameter_kinds.get(param, "value")
                 output.append(f"  {param} ({kind})")
+
+        if self.variables:
+            output.append("\nVariables:")
+            for var_name, var_info in self.variables.items():
+                output.append(
+                    f"  {var_name} ({var_info['kind']}, initial={var_info['initial']})"
+                )
 
         output.append("\nLocations:")
         for loc in self.locations:
@@ -71,13 +79,16 @@ class Channel:
 
 
 class Transition:
-    def __init__(self, id, source, target, guard=None, update=None, sync=None):
+    def __init__(
+        self, id, source, target, guard=None, update=None, sync=None, select=None
+    ):
         self.id = id
         self.source = source
         self.target = target
         self.guard = guard
         self.update = update
         self.sync = sync
+        self.select = select
 
     def __str__(self):
         return (
@@ -86,7 +97,8 @@ class Transition:
             f"   to={self.target},\n"
             f"   guard={self.guard},\n"
             f"   update={self.update},\n"
-            f"   sync={self.sync}\n"
+            f"   sync={self.sync},\n"
+            f"   select={self.select}\n"
             f")"
         )
 
@@ -199,6 +211,34 @@ def parse_template_parameters(template_xml):
     return params, kinds
 
 
+def parse_template_variables(declaration):
+    variables = {}
+    if not declaration:
+        return variables
+
+    clean_lines = []
+    for line in declaration.splitlines():
+        clean_lines.append(line.split("//", 1)[0])
+    clean_declaration = "\n".join(clean_lines)
+
+    for match in re.finditer(
+        r"\b(?P<kind>bool|int)\s+(?P<name>\w+)"
+        r"(?:\s*=\s*(?P<initial>[^;]+))?\s*;",
+        clean_declaration,
+    ):
+        kind = match.group("kind")
+        initial = match.group("initial")
+        if initial is None:
+            initial = "false" if kind == "bool" else "0"
+
+        variables[match.group("name")] = {
+            "kind": kind,
+            "initial": initial.strip(),
+        }
+
+    return variables
+
+
 def parse_template(template_xml):
     name = template_xml.find("name").text
     template = Template(name)
@@ -208,6 +248,7 @@ def parse_template(template_xml):
     )
 
     declaration = template_xml.findtext("declaration") or ""
+    template.variables = parse_template_variables(declaration)
     for match in re.finditer(r"\bclock\s+([\w\s,]+);", declaration):
         for clock_name in match.group(1).split(","):
             clock_name = clock_name.strip()
@@ -230,7 +271,7 @@ def parse_template(template_xml):
         source = trans_xml.find("source").get("ref")
         target = trans_xml.find("target").get("ref")
         tid = trans_xml.get("id")
-        guard = update = sync = None
+        guard = update = sync = select = None
 
         for label in trans_xml.findall("label"):
             kind = label.get("kind")
@@ -240,9 +281,11 @@ def parse_template(template_xml):
                 update = label.text
             elif kind == "synchronisation":
                 sync = label.text
+            elif kind == "select":
+                select = label.text
 
         template.transitions.append(
-            Transition(tid, source, target, guard, update, sync)
+            Transition(tid, source, target, guard, update, sync, select)
         )
 
     return template
@@ -295,7 +338,7 @@ def analyze_communications(nta):
 if __name__ == "__main__":
     import sys
 
-    xml_file = sys.argv[1] if len(sys.argv) > 1 else "xml\\example_1.xml"
+    xml_file = sys.argv[1] if len(sys.argv) > 1 else "xml\\.xml"
     tree = ET.parse(xml_file)
     root = tree.getroot()
 

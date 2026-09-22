@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE nta PUBLIC '-//Uppaal Team//DTD Flat System 1.6//EN' 'http://www.it.uu.se/research/group/darts/uppaal/flat-1_6.dtd'>
+<nta>
+	<declaration>// Place global declarations here.</declaration>
+	<template>
+		<name x="5" y="5">VA</name>
+		<declaration>// Place local declarations here.
+bool noCruzamento = false;
+int livre;
+int aguardar = 0;</declaration>
+		<location id="id0" x="-17" y="-93">
+			<name x="-35" y="-127">Longe</name>
+		</location>
+		<location id="id1" x="-17" y="25">
+			<name x="-59" y="-17">NoCruzamento</name>
+		</location>
+		<location id="id2" x="-85" y="110">
+			<name x="-136" y="85">Livre</name>
+		</location>
+		<location id="id3" x="51" y="110">
+			<name x="59" y="85">Ocupado</name>
+		</location>
+		<location id="id4" x="-85" y="170">
+			<name x="-119" y="178">Cruzando</name>
+		</location>
+		<init ref="id0"/>
+		<transition id="id5">
+			<source ref="id3"/>
+			<target ref="id1"/>
+			<label kind="select" x="144" y="51">rand : int[0, 1]</label>
+			<label kind="guard" x="136" y="110">aguardar &gt; 3</label>
+			<label kind="assignment" x="144" y="-17">aguardar = 0,
+livre = rand</label>
+			<nail x="195" y="110"/>
+			<nail x="195" y="25"/>
+		</transition>
+		<transition id="id6">
+			<source ref="id3"/>
+			<target ref="id3"/>
+			<label kind="guard" x="-25" y="170">aguardar &lt;= 3</label>
+			<label kind="assignment" x="-25" y="153">aguardar++</label>
+			<nail x="-8" y="110"/>
+			<nail x="-8" y="153"/>
+		</transition>
+		<transition id="id7">
+			<source ref="id4"/>
+			<target ref="id0"/>
+			<label kind="guard" x="-297" y="170">noCruzamento == true</label>
+			<label kind="assignment" x="-297" y="-119">noCruzamento = false</label>
+			<nail x="-187" y="170"/>
+			<nail x="-187" y="-93"/>
+		</transition>
+		<transition id="id8">
+			<source ref="id2"/>
+			<target ref="id4"/>
+		</transition>
+		<transition id="id9">
+			<source ref="id1"/>
+			<target ref="id3"/>
+			<label kind="guard" x="-8" y="51">livre == 0</label>
+		</transition>
+		<transition id="id10">
+			<source ref="id1"/>
+			<target ref="id2"/>
+			<label kind="guard" x="-136" y="51">livre == 1</label>
+		</transition>
+		<transition id="id11">
+			<source ref="id0"/>
+			<target ref="id1"/>
+			<label kind="select" x="-85" y="-76">rand : int[0, 1]</label>
+			<label kind="assignment" x="-85" y="-59">noCruzamento = true,
+livre = rand</label>
+		</transition>
+	</template>
+	<system>// Place template instantiations here.
+carro1 = VA();
+// List one or more processes to be composed into a system.
+system carro1;
+</system>
+	<queries>
+		<query>
+			<formula>A[] not deadlock</formula>
+			<comment/>
+			<result outcome="success" type="quality" timestamp="2026-07-20 20:55:13 -0300">
+			</result>
+		</query>
+		<query>
+			<formula>E&lt;&gt; carro1.Cruzando</formula>
+			<comment/>
+			<result outcome="success" type="quality" timestamp="2026-07-20 20:55:15 -0300">
+			</result>
+		</query>
+		<query>
+			<formula>A[] carro1.NoCruzamento imply carro1.noCruzamento == true</formula>
+			<comment/>
+			<result outcome="success" type="quality" timestamp="2026-07-20 20:55:16 -0300">
+			</result>
+		</query>
+		<query>
+			<formula>A&lt;&gt; carro1.Ocupado</formula>
+			<comment/>
+			<result outcome="failure" type="quality" timestamp="2026-07-20 20:55:17 -0300">
+			</result>
+		</query>
+		<query>
+			<formula>E&lt;&gt; carro1.Cruzando and carro1.aguardar &gt;= 1</formula>
+			<comment/>
+			<result outcome="failure" type="quality" timestamp="2026-07-20 21:15:07 -0300">
+			</result>
+		</query>
+		<query>
+			<formula>E&lt;&gt; carro1.aguardar &gt; 4</formula>
+			<comment/>
+			<result outcome="failure" type="quality" timestamp="2026-07-20 21:20:58 -0300">
+			</result>
+		</query>
+		<query>
+			<formula>A[] carro1.NoCruzamento imply carro1.livre == 0</formula>
+			<comment/>
+			<result outcome="failure" type="quality" timestamp="2026-07-20 21:21:17 -0300">
+			</result>
+		</query>
+	</queries>
+</nta>

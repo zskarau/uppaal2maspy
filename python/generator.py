@@ -32,6 +32,18 @@ def _py_val(raw):
     return raw
 
 
+def _belief_add_expr(name, value, adds_event=False):
+    return f'Belief("{name}", {value}, adds_event={adds_event})'
+
+
+def _context_expr(context_args):
+    if not context_args:
+        return ""
+    if len(context_args) == 1:
+        return context_args[0]
+    return "[" + ", ".join(context_args) + "]"
+
+
 def _references_any_var(text, names):
     if not text or not names:
         return False
@@ -44,6 +56,47 @@ def _bool_params(tmpl):
         param for param in tmpl.parameters
         if tmpl.parameter_kinds.get(param) == "bool"
     ]
+
+
+def _state_variables(tmpl, temporal_vars):
+    variables = {
+        param: {"kind": "bool", "initial": "false"}
+        for param in _bool_params(tmpl)
+    }
+
+    for var_name, var_info in tmpl.variables.items():
+        if var_name not in temporal_vars:
+            variables[var_name] = var_info
+
+    return variables
+
+
+def _infer_temporal_vars(tmpl):
+    temporal_vars = set(tmpl.temporal_vars)
+    int_vars = {
+        var_name
+        for var_name, var_info in tmpl.variables.items()
+        if var_info.get("kind") == "int"
+    }
+
+    for trans in tmpl.transitions:
+        for var_name in int_vars:
+            if (
+                trans.guard
+                and re.search(
+                    rf"\b{re.escape(var_name)}\b\s*(?:<=|>=|<|>)",
+                    trans.guard,
+                )
+            ):
+                temporal_vars.add(var_name)
+
+            if (
+                trans.update
+                and re.search(rf"\b{re.escape(var_name)}\b\s*(?:\+\+|--)", trans.update)
+            ):
+                temporal_vars.add(var_name)
+
+    return temporal_vars
 
 
 def _channel_param_map(tmpl, args):
@@ -107,14 +160,22 @@ def guard_to_context(guard, temporal_vars):
             has_supported_guard = True
             continue
 
+        value_equality = re.match(r"^(\w+)\s*==\s*(-?\d+)$", clause)
+        if value_equality:
+            context_args.append(
+                f'Belief("{value_equality.group(1)}", {value_equality.group(2)})'
+            )
+            has_supported_guard = True
+            continue
+
         comment_lines.append(f"# guard not translated: {clause}")
 
     return context_args, comment_lines, has_supported_guard, has_temporal_guard
 
 
-def update_to_body(update, indent, bool_params, temporal_vars):
+def update_to_body(update, indent, state_variables, temporal_vars):
     """
-    Translate only non-temporal boolean updates into MASPY beliefs.
+    Translate only non-temporal variable updates into MASPY beliefs.
     """
 
     if not update:
@@ -124,7 +185,7 @@ def update_to_body(update, indent, bool_params, temporal_vars):
     comment_lines = []
     has_supported_update = False
     has_temporal_update = False
-    bool_param_set = set(bool_params)
+    state_var_set = set(state_variables)
 
     parts = re.split(r",|\n", update)
     for part in parts:
@@ -138,10 +199,11 @@ def update_to_body(update, indent, bool_params, temporal_vars):
             continue
 
         assignment = re.match(r"^(\w+)\s*=\s*(.+)$", clause)
-        if assignment and assignment.group(1) in bool_param_set:
+        if assignment and assignment.group(1) in state_var_set:
+            var_name = assignment.group(1)
             body_lines.append(
-                f'{indent}self.add(Belief("{assignment.group(1)}", '
-                f'{_py_val(assignment.group(2))}))'
+                f'{indent}self._set_belief("{var_name}", '
+                f"{_py_val(assignment.group(2))})"
             )
             has_supported_update = True
             continue
@@ -149,6 +211,33 @@ def update_to_body(update, indent, bool_params, temporal_vars):
         comment_lines.append(f"{indent}# update not translated: {clause}")
 
     return body_lines, comment_lines, has_supported_update, has_temporal_update
+
+
+def select_to_body(select, indent):
+    if not select:
+        return [], []
+
+    body_lines = []
+    comment_lines = []
+    matches = list(
+        re.finditer(r"(\w+)\s*:\s*int\s*\[\s*(-?\d+)\s*,\s*(-?\d+)\s*\]", select)
+    )
+
+    for int_range in matches:
+        var_name, min_value, max_value = int_range.groups()
+        body_lines.append(
+            f"{indent}{var_name} = random.randint({min_value}, {max_value})"
+        )
+
+    if not matches:
+        comment_lines.append(f"{indent}# select not translated: {select.strip()}")
+
+    return body_lines, comment_lines
+
+
+def _location_name(loc_by_id, loc_id):
+    loc = loc_by_id.get(loc_id)
+    return loc.name if loc and loc.name else loc_id
 
 
 def _should_skip_transition(trans, guard_meta, update_meta):
@@ -192,12 +281,22 @@ def _build_channel_receivers(nta):
             continue
 
         param_map = _channel_param_map(tmpl, args)
+        loc_by_id = {loc.id: loc for loc in tmpl.locations}
         for trans in tmpl.transitions:
             direction, actual_channel, _ = resolve_sync_label(trans.sync, param_map)
             if direction == "receive" and actual_channel:
-                receivers.setdefault(actual_channel, set()).add(inst_name)
+                src_name = _location_name(loc_by_id, trans.source)
+                receivers.setdefault(actual_channel, {}).setdefault(
+                    inst_name, set()
+                ).add(src_name)
 
-    return {name: sorted(instances) for name, instances in receivers.items()}
+    return {
+        channel: {
+            inst_name: sorted(states)
+            for inst_name, states in sorted(instances.items())
+        }
+        for channel, instances in receivers.items()
+    }
 
 
 def generate_instance_class(inst_name, tmpl, param_map, chan_receivers):
@@ -205,59 +304,88 @@ def generate_instance_class(inst_name, tmpl, param_map, chan_receivers):
     inner_indent = "        "
 
     loc_by_id = {loc.id: loc for loc in tmpl.locations}
-    bool_params = _bool_params(tmpl)
-    temporal_vars = tmpl.temporal_vars
+    temporal_vars = _infer_temporal_vars(tmpl)
+    state_variables = _state_variables(tmpl, temporal_vars)
 
-    init_loc = loc_by_id.get(tmpl.init)
-    init_name = init_loc.name if init_loc and init_loc.name else tmpl.init
-
-    lines = []
-    lines.append(f"class {inst_name}(Agent):")
-    lines.append(f"{indent}def __init__(self, agt_name):")
-    lines.append(f"{inner_indent}super().__init__(agt_name)")
-    lines.append(f"{inner_indent}self.add(Goal(\"{init_name}\"))")
-    lines.append("")
-
-    for bool_param in bool_params:
-        lines.append(f'{inner_indent}self.add(Belief("{bool_param}", "false"))')
-
-    lines.append("")
-    lines.append(f"{indent}def load_initial_goal(self):")
-    lines.append(f'{inner_indent}self.add(Goal("{init_name}"))')
-
-    lines.append("")
+    init_name = _location_name(loc_by_id, tmpl.init)
 
     transitions_by_source = defaultdict(list)
     for trans in tmpl.transitions:
         transitions_by_source[trans.source].append(trans)
 
+    active_state_ids = set()
+    for src_id, transitions in transitions_by_source.items():
+        for trans in transitions:
+            guard_meta = guard_to_context(trans.guard, temporal_vars)
+            update_meta = update_to_body(
+                trans.update, inner_indent, state_variables, temporal_vars
+            )
+            if _should_skip_transition(trans, guard_meta, update_meta):
+                continue
+
+            direction, _, _ = resolve_sync_label(trans.sync, param_map)
+            if direction != "receive":
+                active_state_ids.add(src_id)
+
+    lines = []
+    lines.append(f"class {inst_name}(Agent):")
+    lines.append(f"{indent}def __init__(self, agt_name=None):")
+    lines.append(f"{inner_indent}super().__init__(agt_name)")
+    lines.append("")
+
+    for var_name, var_info in state_variables.items():
+        lines.append(
+            f"{inner_indent}self.add("
+            f"{_belief_add_expr(var_name, _py_val(var_info.get('initial', 'false')))}"
+            f")"
+        )
+
+    lines.append("")
+    lines.append(f"{indent}def _set_belief(self, name, value):")
+    lines.append(f"{inner_indent}for belief in list(self.belief_list):")
+    lines.append(
+        f'{inner_indent}{indent}if belief.name == name and belief.source == "self":'
+    )
+    lines.append(f"{inner_indent}{indent}{indent}self.rm(belief)")
+    lines.append(f"{inner_indent}self.add(Belief(name, value, adds_event=False))")
+    lines.append("")
+    lines.append(f"{indent}def _receiver_ready(self, target, expected_states):")
+    lines.append(
+        f'{inner_indent}state = self.send(target, askOneReply, Belief("__state", Any))'
+    )
+    lines.append(f"{inner_indent}return bool(state and state.values in expected_states)")
+    lines.append("")
+    lines.append(f"{indent}def load_initial_goal(self):")
+    lines.append(f'{inner_indent}self._set_belief("__state", "{init_name}")')
+    if tmpl.init in active_state_ids:
+        lines.append(f'{inner_indent}self.add(Goal("{init_name}"))')
+
+    lines.append("")
+
     generated_plans = 0
 
     for src_id, transitions in transitions_by_source.items():
-        src_loc = loc_by_id.get(src_id)
-        src_name = src_loc.name if src_loc and src_loc.name else src_id
+        src_name = _location_name(loc_by_id, src_id)
 
         plan_counter = 0
         for trans in transitions:
             guard_meta = guard_to_context(trans.guard, temporal_vars)
             update_meta = update_to_body(
-                trans.update, inner_indent, bool_params, temporal_vars
+                trans.update, inner_indent, state_variables, temporal_vars
             )
             if _should_skip_transition(trans, guard_meta, update_meta):
                 continue
 
-            tgt_loc = loc_by_id.get(trans.target)
-            tgt_name = tgt_loc.name if tgt_loc and tgt_loc.name else trans.target
+            tgt_name = _location_name(loc_by_id, trans.target)
             is_self_loop = trans.source == trans.target
 
-            context_args = []
+            context_args = [f'Belief("__state", "{src_name}")']
             comment_lines = []
             trigger_goal = f'Goal("{src_name}")'
 
             direction, actual_channel, _ = resolve_sync_label(trans.sync, param_map)
             if direction == "receive" and actual_channel:
                 trigger_goal = f'Goal("{actual_channel}")'
-                context_args.append(f'Goal("{src_name}")')
 
             guard_ctx, guard_comments, _, _ = guard_meta
             context_args.extend(guard_ctx)
@@ -267,11 +395,9 @@ def generate_instance_class(inst_name, tmpl, param_map, chan_receivers):
             suffix = f"_{plan_counter}" if len(transitions) > 1 else ""
             plan_name = f"{src_name}{suffix}"
 
-            if context_args:
-                ctx_str = ", ".join(context_args)
-                lines.append(
-                    f"{indent}@pl(gain, {trigger_goal}, {ctx_str})"
-                )
+            context_expr = _context_expr(context_args)
+            if context_expr:
+                lines.append(f"{indent}@pl(gain, {trigger_goal}, {context_expr})")
             else:
                 lines.append(f"{indent}@pl(gain, {trigger_goal})")
 
@@ -292,32 +418,60 @@ def generate_instance_class(inst_name, tmpl, param_map, chan_receivers):
                 f'{inner_indent}self.print(" | ".join({trace_parts!r}))'
             ]
 
+            select_lines, select_comments = select_to_body(trans.select, inner_indent)
+            body_lines.extend(select_lines)
+            body_lines.extend(select_comments)
+
             update_lines, update_comments, _, _ = update_meta
             body_lines.extend(update_lines)
             body_lines.extend(update_comments)
 
             if direction == "send" and actual_channel:
-                targets = [
-                    target for target in chan_receivers.get(actual_channel, [])
+                receiver_states = chan_receivers.get(actual_channel, {})
+                targets = {
+                    target: states
+                    for target, states in receiver_states.items()
                     if target != inst_name
-                ]
+                }
                 if not targets:
-                    targets = chan_receivers.get(actual_channel, [])
+                    targets = receiver_states
 
                 if targets:
-                    for target in targets:
+                    body_lines.append(f"{inner_indent}sent_sync = False")
+                    for target, states in targets.items():
+                        states_repr = repr(states)
                         body_lines.append(
-                            f'{inner_indent}self.send("{target}", achieve, '
+                            f'{inner_indent}if self._receiver_ready("{target}", '
+                            f"{states_repr}):"
+                        )
+                        body_lines.append(
+                            f'{inner_indent}{indent}self.send("{target}", achieve, '
                             f'Goal("{actual_channel}"), "{actual_channel}")'
                         )
+                        body_lines.append(f"{inner_indent}{indent}sent_sync = True")
+                    body_lines.append(f"{inner_indent}if not sent_sync:")
+                    if trans.source in active_state_ids:
+                        body_lines.append(
+                            f'{inner_indent}{indent}self.add(Goal("{src_name}"))'
+                        )
+                    body_lines.append(f"{inner_indent}{indent}return")
                 else:
                     body_lines.append(
-                        f'{inner_indent}self.send("?", achieve, '
-                        f'Goal("{actual_channel}"), "{actual_channel}")  '
-                        f'# receiver not identified'
+                        f"{inner_indent}# receiver not identified for channel: "
+                        f"{actual_channel}"
                     )
+                    if trans.source in active_state_ids:
+                        body_lines.append(
+                            f'{inner_indent}self.add(Goal("{src_name}"))'
+                        )
+                    body_lines.append(f"{inner_indent}return")
 
             if not is_self_loop:
+                body_lines.append(
+                    f'{inner_indent}self._set_belief("__state", "{tgt_name}")'
+                )
+
+            if trans.target in active_state_ids:
                 body_lines.append(f'{inner_indent}self.add(Goal("{tgt_name}"))')
 
             if not body_lines:
@@ -339,6 +493,7 @@ def generate_maspy_file(nta):
     chan_receivers = _build_channel_receivers(nta)
 
     output = []
+    output.append("import random")
     output.append("from maspy import *")
 
     for inst_name, (tmpl_name, args) in nta.instances.items():
@@ -391,7 +546,7 @@ def generate_maspy_file(nta):
 
 
 if __name__ == "__main__":
-    xml_file = sys.argv[1] if len(sys.argv) > 1 else "xml\\example_1.xml"
+    xml_file = sys.argv[1] if len(sys.argv) > 1 else "xml\\.xml"
     out_dir = sys.argv[2] if len(sys.argv) > 2 else "python\\"
 
     nta = build_nta(xml_file)

@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE nta PUBLIC '-//Uppaal Team//DTD Flat System 1.6//EN' 'http://www.it.uu.se/research/group/darts/uppaal/flat-1_6.dtd'>
+<nta>
+	<declaration>// Place global declarations here.
+chan livre, longe, proximo, ocupado;</declaration>
+	<template>
+		<name>Controlador</name>
+		<location id="id0" x="-93" y="-34">
+			<name x="-103" y="-68">Idle</name>
+		</location>
+		<location id="id1" x="25" y="-34">
+			<name x="0" y="-68">Livre</name>
+		</location>
+		<location id="id2" x="127" y="-34">
+			<name x="119" y="-68">Ocupado</name>
+		</location>
+		<init ref="id0"/>
+		<transition id="id3">
+			<source ref="id1"/>
+			<target ref="id0"/>
+			<label kind="synchronisation" x="-59" y="17">longe?</label>
+			<nail x="-34" y="17"/>
+		</transition>
+		<transition id="id4">
+			<source ref="id2"/>
+			<target ref="id1"/>
+			<label kind="synchronisation" x="51" y="17">livre!</label>
+			<nail x="76" y="17"/>
+		</transition>
+		<transition id="id5">
+			<source ref="id1"/>
+			<target ref="id2"/>
+			<label kind="synchronisation" x="42" y="-102">ocupado!</label>
+			<nail x="76" y="-85"/>
+		</transition>
+		<transition id="id6">
+			<source ref="id0"/>
+			<target ref="id1"/>
+			<label kind="synchronisation" x="-68" y="-51">proximo?</label>
+		</transition>
+	</template>
+	<template>
+		<name x="5" y="5">VA</name>
+		<declaration>// Place local declarations here.
+int aguardar= 0;</declaration>
+		<location id="id7" x="-17" y="-68">
+			<name x="-35" y="-102">Longe</name>
+		</location>
+		<location id="id8" x="-17" y="25">
+			<name x="-43" y="-9">NoCruzamento</name>
+		</location>
+		<location id="id9" x="-85" y="110">
+			<name x="-136" y="85">Livre</name>
+		</location>
+		<location id="id10" x="51" y="110">
+			<name x="59" y="85">Ocupado</name>
+		</location>
+		<location id="id11" x="-85" y="170">
+			<name x="-85" y="178">Cruzando</name>
+		</location>
+		<init ref="id7"/>
+		<transition id="id12">
+			<source ref="id10"/>
+			<target ref="id8"/>
+			<label kind="guard" x="136" y="110">aguardar &gt; 3</label>
+			<label kind="assignment" x="136" y="0">aguardar = 0</label>
+			<nail x="195" y="110"/>
+			<nail x="195" y="25"/>
+		</transition>
+		<transition id="id13">
+			<source ref="id10"/>
+			<target ref="id10"/>
+			<label kind="assignment" x="-25" y="144">aguardar++</label>
+			<nail x="-8" y="110"/>
+			<nail x="-8" y="153"/>
+		</transition>
+		<transition id="id14">
+			<source ref="id11"/>
+			<target ref="id7"/>
+			<label kind="synchronisation" x="-212" y="42">longe!</label>
+			<nail x="-187" y="170"/>
+			<nail x="-187" y="-68"/>
+		</transition>
+		<transition id="id15">
+			<source ref="id9"/>
+			<target ref="id11"/>
+		</transition>
+		<transition id="id16">
+			<source ref="id8"/>
+			<target ref="id10"/>
+			<label kind="synchronisation" x="-8" y="59">ocupado?</label>
+		</transition>
+		<transition id="id17">
+			<source ref="id8"/>
+			<target ref="id9"/>
+			<label kind="synchronisation" x="-85" y="59">livre?</label>
+		</transition>
+		<transition id="id18">
+			<source ref="id7"/>
+			<target ref="id8"/>
+			<label kind="synchronisation" x="-42" y="-42">proximo!</label>
+		</transition>
+	</template>
+	<system>// Place template instantiations here.
+carro1 = VA();
+cont1 = Controlador();
+// List one or more processes to be composed into a system.
+system carro1, cont1;
+</system>
+	<queries>
+	</queries>
+</nta>
