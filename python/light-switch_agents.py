@@ -1,11 +1,13 @@
 import random
 from maspy import *
+MAX_AGENT_TRANSITIONS = 50
 # ------------------------------------------------------------
 # Instance: User1 (template: User)
 # ------------------------------------------------------------
 class User1(Agent):
     def __init__(self, agt_name=None):
         super().__init__(agt_name)
+        self._transition_count = 0
 
 
     def _set_belief(self, name, value):
@@ -14,9 +16,13 @@ class User1(Agent):
                 self.rm(belief)
         self.add(Belief(name, value, adds_event=False))
 
-    def _receiver_ready(self, target, expected_states):
-        state = self.send(target, askOneReply, Belief("__state", Any))
-        return bool(state and state.values in expected_states)
+    def _begin_transition(self):
+        if self._transition_count >= MAX_AGENT_TRANSITIONS:
+            self.print("Maximum transition limit reached")
+            Admin().stop_system()
+            return False
+        self._transition_count += 1
+        return True
 
     def load_initial_goal(self):
         self._set_belief("__state", "idle")
@@ -24,14 +30,10 @@ class User1(Agent):
 
     @pl(gain, Goal("idle"), Belief("__state", "idle"))
     def idle(self, src, *plan_args):
-        self.print(" | ".join(['State: idle (self-loop)', 'sync sending: press']))
-        sent_sync = False
-        if self._receiver_ready("Light1", ['off', 'on']):
-            self.send("Light1", achieve, Goal("press"), "press")
-            sent_sync = True
-        if not sent_sync:
-            self.add(Goal("idle"))
+        if not self._begin_transition():
             return
+        self.print(" | ".join(['State: idle (self-loop)', 'sync sending: press']))
+        self.send("Light1", achieve, Goal("press"), "press")
         self.add(Goal("idle"))
 
 # ------------------------------------------------------------
@@ -40,6 +42,7 @@ class User1(Agent):
 class Light1(Agent):
     def __init__(self, agt_name=None):
         super().__init__(agt_name)
+        self._transition_count = 0
 
 
     def _set_belief(self, name, value):
@@ -48,20 +51,28 @@ class Light1(Agent):
                 self.rm(belief)
         self.add(Belief(name, value, adds_event=False))
 
-    def _receiver_ready(self, target, expected_states):
-        state = self.send(target, askOneReply, Belief("__state", Any))
-        return bool(state and state.values in expected_states)
+    def _begin_transition(self):
+        if self._transition_count >= MAX_AGENT_TRANSITIONS:
+            self.print("Maximum transition limit reached")
+            Admin().stop_system()
+            return False
+        self._transition_count += 1
+        return True
 
     def load_initial_goal(self):
         self._set_belief("__state", "off")
 
     @pl(gain, Goal("press"), Belief("__state", "on"))
     def on(self, src, *plan_args):
+        if not self._begin_transition():
+            return
         self.print(" | ".join(['on -> off', 'sync receiving: press']))
         self._set_belief("__state", "off")
 
     @pl(gain, Goal("press"), Belief("__state", "off"))
     def off(self, src, *plan_args):
+        if not self._begin_transition():
+            return
         self.print(" | ".join(['off -> on', 'sync receiving: press']))
         self._set_belief("__state", "on")
 

@@ -281,20 +281,13 @@ def _build_channel_receivers(nta):
             continue
 
         param_map = _channel_param_map(tmpl, args)
-        loc_by_id = {loc.id: loc for loc in tmpl.locations}
         for trans in tmpl.transitions:
             direction, actual_channel, _ = resolve_sync_label(trans.sync, param_map)
             if direction == "receive" and actual_channel:
-                src_name = _location_name(loc_by_id, trans.source)
-                receivers.setdefault(actual_channel, {}).setdefault(
-                    inst_name, set()
-                ).add(src_name)
+                receivers.setdefault(actual_channel, set()).add(inst_name)
 
     return {
-        channel: {
-            inst_name: sorted(states)
-            for inst_name, states in sorted(instances.items())
-        }
+        channel: sorted(instances)
         for channel, instances in receivers.items()
     }
 
@@ -331,6 +324,7 @@ def generate_instance_class(inst_name, tmpl, param_map, chan_receivers):
     lines.append(f"class {inst_name}(Agent):")
     lines.append(f"{indent}def __init__(self, agt_name=None):")
     lines.append(f"{inner_indent}super().__init__(agt_name)")
+    lines.append(f"{inner_indent}self._transition_count = 0")
     lines.append("")
 
     for var_name, var_info in state_variables.items():
@@ -349,11 +343,17 @@ def generate_instance_class(inst_name, tmpl, param_map, chan_receivers):
     lines.append(f"{inner_indent}{indent}{indent}self.rm(belief)")
     lines.append(f"{inner_indent}self.add(Belief(name, value, adds_event=False))")
     lines.append("")
-    lines.append(f"{indent}def _receiver_ready(self, target, expected_states):")
+    lines.append(f"{indent}def _begin_transition(self):")
     lines.append(
-        f'{inner_indent}state = self.send(target, askOneReply, Belief("__state", Any))'
+        f"{inner_indent}if self._transition_count >= MAX_AGENT_TRANSITIONS:"
     )
-    lines.append(f"{inner_indent}return bool(state and state.values in expected_states)")
+    lines.append(
+        f'{inner_indent}{indent}self.print("Maximum transition limit reached")'
+    )
+    lines.append(f"{inner_indent}{indent}Admin().stop_system()")
+    lines.append(f"{inner_indent}{indent}return False")
+    lines.append(f"{inner_indent}self._transition_count += 1")
+    lines.append(f"{inner_indent}return True")
     lines.append("")
     lines.append(f"{indent}def load_initial_goal(self):")
     lines.append(f'{inner_indent}self._set_belief("__state", "{init_name}")')
@@ -405,6 +405,8 @@ def generate_instance_class(inst_name, tmpl, param_map, chan_receivers):
                 lines.append(f"{indent}{comment}")
 
             lines.append(f"{indent}def {plan_name}(self, src, *plan_args):")
+            lines.append(f"{inner_indent}if not self._begin_transition():")
+            lines.append(f"{inner_indent}{indent}return")
 
             trace_parts = [
                 f"State: {src_name} (self-loop)"
@@ -427,44 +429,22 @@ def generate_instance_class(inst_name, tmpl, param_map, chan_receivers):
             body_lines.extend(update_comments)
 
             if direction == "send" and actual_channel:
-                receiver_states = chan_receivers.get(actual_channel, {})
-                targets = {
-                    target: states
-                    for target, states in receiver_states.items()
-                    if target != inst_name
-                }
+                receiver_names = chan_receivers.get(actual_channel, [])
+                targets = [target for target in receiver_names if target != inst_name]
                 if not targets:
-                    targets = receiver_states
+                    targets = receiver_names
 
                 if targets:
-                    body_lines.append(f"{inner_indent}sent_sync = False")
-                    for target, states in targets.items():
-                        states_repr = repr(states)
+                    for target in targets:
                         body_lines.append(
-                            f'{inner_indent}if self._receiver_ready("{target}", '
-                            f"{states_repr}):"
-                        )
-                        body_lines.append(
-                            f'{inner_indent}{indent}self.send("{target}", achieve, '
+                            f'{inner_indent}self.send("{target}", achieve, '
                             f'Goal("{actual_channel}"), "{actual_channel}")'
                         )
-                        body_lines.append(f"{inner_indent}{indent}sent_sync = True")
-                    body_lines.append(f"{inner_indent}if not sent_sync:")
-                    if trans.source in active_state_ids:
-                        body_lines.append(
-                            f'{inner_indent}{indent}self.add(Goal("{src_name}"))'
-                        )
-                    body_lines.append(f"{inner_indent}{indent}return")
                 else:
                     body_lines.append(
                         f"{inner_indent}# receiver not identified for channel: "
                         f"{actual_channel}"
                     )
-                    if trans.source in active_state_ids:
-                        body_lines.append(
-                            f'{inner_indent}self.add(Goal("{src_name}"))'
-                        )
-                    body_lines.append(f"{inner_indent}return")
 
             if not is_self_loop:
                 body_lines.append(
@@ -495,6 +475,7 @@ def generate_maspy_file(nta):
     output = []
     output.append("import random")
     output.append("from maspy import *")
+    output.append("MAX_AGENT_TRANSITIONS = 50")
 
     for inst_name, (tmpl_name, args) in nta.instances.items():
         tmpl = tmpl_by_name.get(tmpl_name)
@@ -546,7 +527,7 @@ def generate_maspy_file(nta):
 
 
 if __name__ == "__main__":
-    xml_file = sys.argv[1] if len(sys.argv) > 1 else "xml\\.xml"
+    xml_file = sys.argv[1] if len(sys.argv) > 1 else "xml\\light-switch.xml"
     out_dir = sys.argv[2] if len(sys.argv) > 2 else "python\\"
 
     nta = build_nta(xml_file)
